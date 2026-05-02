@@ -1120,6 +1120,7 @@ Tabs.Play:AddParagraph({ Title = "🌀 Auto Spiral Drill", Content = "กดป�
 Tabs.Play:AddToggle("AutoSpiralDrill", { Title = "🌀 Auto Spiral Drill", Default = false })
 
 task.spawn(function()
+    local lastFired = 0
     while true do
         task.wait(0.2)
         if not Options.AutoSpiralDrill or not Options.AutoSpiralDrill.Value then
@@ -1129,7 +1130,9 @@ task.spawn(function()
         pcall(function()
             visible = LocalPlayer.PlayerGui.HUD.InGame.SpiralDrillButton.Visible
         end)
-        if visible then
+        local now = tick()
+        if visible and now - lastFired >= 2 then
+            lastFired = now
             pcall(function()
                 game:GetService("ReplicatedStorage")
                     :WaitForChild("Remote", 5):WaitForChild("Server", 5)
