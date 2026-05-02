@@ -655,6 +655,14 @@ local function canSendWebhook(itemName)
     return true
 end
 
+local _webhookCooldown = {}
+local function canSendWebhook(itemName)
+    local last = _webhookCooldown[itemName] or 0
+    if tick() - last < 5 then return false end
+    _webhookCooldown[itemName] = tick()
+    return true
+end
+
 local function sendMerchantBuy(itemName, currentAmount)
     local name = LocalPlayer.Name
     local icon = getIcon(itemName)
@@ -878,6 +886,7 @@ Tabs.AutoJoin:AddToggle("AutoJoinToggle", { Title = "🚀 Auto Join", Default = 
 
                     elseif SelectedStage == "Misc" then
                         if SelectedWorld == "SpiralInvasion" then
+                            -- Rifts → Spiral Invasion (Calamity mode + world + chapter + element)
                             local ok1 = pcall(function()
                                 PlayRoomEvent:FireServer("Change-Mode",  { Mode = "Calamity" })
                             end) ; task.wait(0.3)
@@ -1112,36 +1121,6 @@ task.spawn(function()
 end)
 
 -- ===========================
---   Auto Spiral Drill
--- ===========================
-
-Tabs.Play:AddParagraph({ Title = "🌀 Auto Spiral Drill", Content = "กดปุ่ม Spiral Drill อัตโนมัติเมื่อปุ่มปรากฏในเกม" })
-
-Tabs.Play:AddToggle("AutoSpiralDrill", { Title = "🌀 Auto Spiral Drill", Default = false })
-
-local SpiralDrillEvent = game:GetService("ReplicatedStorage")
-    :WaitForChild("Remote"):WaitForChild("Server")
-    :WaitForChild("UI"):WaitForChild("SpiralDrill")
-
-task.spawn(function()
-    while true do
-        task.wait(0.2)
-        if not Options.AutoSpiralDrill or not Options.AutoSpiralDrill.Value then
-            continue
-        end
-        local visible = false
-        pcall(function()
-            visible = LocalPlayer.PlayerGui.HUD.InGame.SpiralDrillButton.Visible
-        end)
-        if visible then
-            pcall(function()
-                SpiralDrillEvent:FireServer()
-            end)
-        end
-    end
-end)
-
--- ===========================
 --   MERCHANT TAB
 -- ===========================
 
@@ -1160,6 +1139,8 @@ local Items = {
     "Soul Fragments", "Stat Boosters", "Stats Key", "Trait Reroll",
     "Onigiri", "Green Bean", "Cursed Finger", "Dr. Megga Punk",
 }
+
+
 
 local function getGold()
     local ok, val = pcall(function()
@@ -2279,7 +2260,7 @@ task.spawn(function()
 end)
 
 task.delay(2, function()
-    print("[HamYai69Hub] ✅ Ready! v2.18 — Spiral Invasion / Auto End Match / Element Select / Anniversary Coin / Auto Spiral Drill")
+    print("[HamYai69Hub] ✅ Ready! v2.18 — Spiral Invasion / Auto End Match / Element Select / Anniversary Coin")
 end)
 
 -- ===========================
