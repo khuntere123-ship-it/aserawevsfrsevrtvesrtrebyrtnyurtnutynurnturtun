@@ -2140,14 +2140,6 @@ Tabs.Settings:AddButton({
 })
 
 -- ===========================
---   Auto Minimize UI
--- ===========================
-
-Tabs.Settings:AddParagraph({ Title = "🪟 UI Settings", Content = "ตั้งค่า UI เพิ่มเติม" })
-
-Tabs.Settings:AddToggle("AutoMinimizeOnLoad", { Title = "📌 พับ UI อัตโนมัติเมื่อสคริปโหลด", Default = false })
-
--- ===========================
 --   SAVE & INTERFACE
 -- ===========================
 
@@ -2192,15 +2184,6 @@ end
 antiAfk()
 Window:SelectTab(1)
 SaveManager:LoadAutoloadConfig()
-
--- Auto minimize after load
-task.spawn(function()
-    task.wait(2.5)
-    if Options.AutoMinimizeOnLoad and Options.AutoMinimizeOnLoad.Value then
-        pcall(function() Window:Minimize() end)
-        print("[HamYai69Hub] 🪟 Auto Minimize — UI พับแล้ว")
-    end
-end)
 
 -- ===========================
 -- ===========================
