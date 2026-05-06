@@ -1,7 +1,7 @@
 -- ===========================
 --   Auto PlayRoom + Merchant
 --   UI: Fluent (1dontgiveaf fork)
---   v2.7 - Bug Fixes (Chapter sync / Event world / Merchant lock)
+--   v2.9 - Fix Raids Change-World / Chapter Sync / Dropdown Cascade / Daily Rewards / SystemMessage Blocker
 -- ===========================
 
 repeat task.wait(0.25) until game:IsLoaded()
@@ -53,6 +53,68 @@ local PlayRoomEvent = game:GetService("ReplicatedStorage"):WaitForChild("Remote"
 local MerchantEvent = game:GetService("ReplicatedStorage"):WaitForChild("Remote"):WaitForChild("Server"):WaitForChild("Gameplay"):WaitForChild("Merchant")
 
 -- ===========================
+--   SystemMessage Blocker
+--   รันทันทีตั้งแต่ต้น ก่อนทุกอย่าง
+-- ===========================
+
+task.spawn(function()
+    local function blockSysMsg(sysMsg)
+        if not sysMsg then return end
+
+        -- ปิดทันที
+        pcall(function() sysMsg.Enabled = false end)
+
+        -- watch ถ้า game พยายาม set Enabled = true
+        pcall(function()
+            sysMsg:GetPropertyChangedSignal("Enabled"):Connect(function()
+                if sysMsg.Enabled then
+                    sysMsg.Enabled = false
+                end
+            end)
+        end)
+
+        -- ซ่อนทุก children ที่มีอยู่แล้ว
+        pcall(function()
+            for _, v in pairs(sysMsg:GetDescendants()) do
+                if v:IsA("Frame") or v:IsA("TextLabel") or v:IsA("ImageLabel") or v:IsA("ScrollingFrame") then
+                    v.Visible = false
+                    pcall(function()
+                        v:GetPropertyChangedSignal("Visible"):Connect(function()
+                            if v.Visible then v.Visible = false end
+                        end)
+                    end)
+                end
+            end
+        end)
+
+        -- watch DescendantAdded กันกรณี children โหลดทีหลัง
+        pcall(function()
+            sysMsg.DescendantAdded:Connect(function(v)
+                if v:IsA("Frame") or v:IsA("TextLabel") or v:IsA("ImageLabel") or v:IsA("ScrollingFrame") then
+                    v.Visible = false
+                    pcall(function()
+                        v:GetPropertyChangedSignal("Visible"):Connect(function()
+                            if v.Visible then v.Visible = false end
+                        end)
+                    end)
+                end
+            end)
+        end)
+    end
+
+    -- ถ้า SystemMessage มีอยู่แล้ว
+    local sysMsg = LocalPlayer.PlayerGui:FindFirstChild("SystemMessage")
+    if sysMsg then blockSysMsg(sysMsg) end
+
+    -- รอ SystemMessage ถูก add เข้ามา
+    LocalPlayer.PlayerGui.ChildAdded:Connect(function(child)
+        if child.Name == "SystemMessage" then
+            blockSysMsg(child)
+        end
+    end)
+end)
+
+-- ===========================
 --   Stage Data Map
 -- ===========================
 
@@ -93,12 +155,13 @@ local StageData = {
             ["Trash Ground"]       = "TrashGroundRaid",
         },
         chapterMap = {
-            JJKRaid = {1,2}, EsperRaid = {1},
+            JJKRaid         = {1,2},
+            EsperRaid       = {1},
             TrashGroundRaid = {1,2,3},
         },
         chapterPrefix = {
-            JJKRaid = "JJK_Raid_Chapter",
-            EsperRaid = "Esper_Raid_Chapter",
+            JJKRaid         = "JJK_Raid_Chapter",
+            EsperRaid       = "Esper_Raid_Chapter",
             TrashGroundRaid = "TrashGround_Act",
         },
     },
@@ -353,11 +416,15 @@ end
 
 local _saveLoaded = false
 
-local function updateDropdown(dropdown, newValues, autoSet)
+-- ===========================
+--   updateDropdown (FIXED)
+-- ===========================
+
+local function updateDropdown(dropdown, newValues, forceFirst)
     if not dropdown then return end
     dropdown.Values = newValues
-    if autoSet and _saveLoaded then
-        dropdown:SetValue(newValues[1])
+    if forceFirst then
+        pcall(function() dropdown:SetValue(newValues[1]) end)
     end
 end
 
@@ -495,29 +562,19 @@ local icons = {
 local function getIcon(name) return icons[name] or "🎁" end
 
 -- ===========================
--- ===========================
 
 local function buyItemDirect(itemName)
     local beforeStr = getItemAmount(itemName)
     local beforeNum = parseAmount(beforeStr) or 0
-
-    pcall(function()
-        MerchantEvent:FireServer(itemName, 9999)
-    end)
-
+    pcall(function() MerchantEvent:FireServer(itemName, 9999) end)
     local deadline = tick() + 3
     local afterNum = beforeNum
     while tick() < deadline do
         task.wait(0.2)
         local cur = parseAmount(getItemAmount(itemName)) or 0
-        if cur > beforeNum then
-            afterNum = cur
-            break
-        end
+        if cur > beforeNum then afterNum = cur break end
     end
-
     local bought = afterNum > beforeNum
-
     if bought then
         task.wait(0.2)
         pcall(function()
@@ -537,62 +594,41 @@ end
 
 local function doRequest(payload)
     if DiscordConfig.webhookURL == "" or not DiscordConfig.enabled then
-        print("❌ Webhook disabled or URL empty")
-        return
+        print("❌ Webhook disabled or URL empty") return
     end
     task.spawn(function()
         local success = false
         local errorMsg = ""
         do
             local ok, err = pcall(function()
-                HttpService:PostAsync(
-                    DiscordConfig.webhookURL,
-                    payload,
-                    Enum.HttpContentType.ApplicationJson
-                )
+                HttpService:PostAsync(DiscordConfig.webhookURL, payload, Enum.HttpContentType.ApplicationJson)
             end)
             if ok then success = true print("✅ Webhook sent via HttpService!")
             else errorMsg = tostring(err) end
         end
         if not success and request then
             local ok, err = pcall(function()
-                request({
-                    Url = DiscordConfig.webhookURL,
-                    Method = "POST",
-                    Headers = { ["Content-Type"] = "application/json" },
-                    Body = payload,
-                })
+                request({ Url = DiscordConfig.webhookURL, Method = "POST", Headers = { ["Content-Type"] = "application/json" }, Body = payload })
             end)
             if ok then success = true print("✅ Webhook sent via request!")
             else errorMsg = tostring(err) end
         end
         if not success and syn and syn.request then
             local ok, err = pcall(function()
-                syn.request({
-                    Url = DiscordConfig.webhookURL,
-                    Method = "POST",
-                    Headers = { ["Content-Type"] = "application/json" },
-                    Body = payload,
-                })
+                syn.request({ Url = DiscordConfig.webhookURL, Method = "POST", Headers = { ["Content-Type"] = "application/json" }, Body = payload })
             end)
             if ok then success = true print("✅ Webhook sent via syn.request!")
             else errorMsg = tostring(err) end
         end
-        if not success then
-            print("❌ Webhook failed - " .. (errorMsg ~= "" and errorMsg or "All methods failed"))
-        end
+        if not success then print("❌ Webhook failed - " .. (errorMsg ~= "" and errorMsg or "All methods failed")) end
     end)
 end
 
 local function sendRoundEnd(rewardItems, elapsed)
     local pingStr = (DiscordConfig.pingOnItem and DiscordConfig.userID ~= "") and ("<@" .. DiscordConfig.userID .. ">") or ""
     local name    = LocalPlayer.Name
-    local okMode, gameMode = pcall(function()
-        return LocalPlayer.PlayerGui.HUD.InGame.Main.GameInfo.Gamemode.Label.Text
-    end)
-    local okStage, stageLabel = pcall(function()
-        return LocalPlayer.PlayerGui.HUD.InGame.Main.GameInfo.Stage.Label.Text
-    end)
+    local okMode, gameMode = pcall(function() return LocalPlayer.PlayerGui.HUD.InGame.Main.GameInfo.Gamemode.Label.Text end)
+    local okStage, stageLabel = pcall(function() return LocalPlayer.PlayerGui.HUD.InGame.Main.GameInfo.Stage.Label.Text end)
     local stageInfo = (okMode and gameMode or SelectedStage) .. " • " .. (okStage and stageLabel or SelectedWorldDisplay .. " • " .. SelectedChapterDisplay)
     local rewardsText = "🎁 **Rewards**\n"
     local results = {}
@@ -600,10 +636,7 @@ local function sendRoundEnd(rewardItems, elapsed)
     for _, item in ipairs(rewardItems) do
         if item.name ~= "Exp" then
             pending = pending + 1
-            task.spawn(function()
-                results[item.name] = waitAndGetItemAmount(item.name)
-                pending = pending - 1
-            end)
+            task.spawn(function() results[item.name] = waitAndGetItemAmount(item.name) pending = pending - 1 end)
         end
     end
     while pending > 0 do task.wait(0.05) end
@@ -612,13 +645,9 @@ local function sendRoundEnd(rewardItems, elapsed)
         local icon = icons[item.name]
         local prefix = icon and (icon .. " ") or "• "
         if item.name == "Exp" then
-            local ok, lvText = pcall(function()
-                return LocalPlayer.PlayerGui.HUD.ExpBar.Numbers.Text
-            end)
+            local ok, lvText = pcall(function() return LocalPlayer.PlayerGui.HUD.ExpBar.Numbers.Text end)
             local lvNum = "?"
-            if ok and lvText then
-                lvNum = lvText:match("Level%s*(%d+)") or lvText:match("Lv%s*(%d+)") or "?"
-            end
+            if ok and lvText then lvNum = lvText:match("Level%s*(%d+)") or lvText:match("Lv%s*(%d+)") or "?" end
             rewardsText = rewardsText .. "⭐ **" .. displayName .. "** " .. lvNum .. "\n"
         else
             local current = results[item.name] or "?"
@@ -631,18 +660,13 @@ local function sendRoundEnd(rewardItems, elapsed)
         "```\nResult: + WON  Time: " .. elapsed .. "\n```\n" ..
         rewardsText
     local payload = HttpService:JSONEncode({
-        content    = pingStr,
-        username   = "HamYai69Hub",
+        content = pingStr, username = "HamYai69Hub",
         avatar_url = "https://i.postimg.cc/rwbBMph6/preview-Picsart-Ai-Image-Enhancer.png",
-        embeds = {
-            {
-                title       = "⚔️ [🎊 1 YR] Re:Rangers X — Stage Ended",
-                description = description,
-                color       = 0x7B2FBE,
-                image       = { url = "https://c.tenor.com/zWjGMaQ8h5EAAAAd/tenor.gif" },
-                footer      = { text = "HamYai69Hub • Made by MitchAK • " .. os.date("%d/%m/%Y %H:%M") },
-            },
-        }
+        embeds = {{
+            title = "⚔️ [🎊 1 YR] Re:Rangers X — Stage Ended", description = description, color = 0x7B2FBE,
+            image = { url = "https://c.tenor.com/zWjGMaQ8h5EAAAAd/tenor.gif" },
+            footer = { text = "HamYai69Hub • Made by MitchAK • " .. os.date("%d/%m/%Y %H:%M") },
+        }},
     })
     doRequest(payload)
 end
@@ -664,19 +688,12 @@ local function sendMerchantBuy(itemName, currentAmount)
         icon .. " **" .. itemName .. "**\n" ..
         "Amount in Bag: **" .. tostring(currentAmount) .. "**"
     local payload = HttpService:JSONEncode({
-        username   = "HamYai69Hub",
+        username = "HamYai69Hub",
         avatar_url = "https://i.postimg.cc/rwbBMph6/preview-Picsart-Ai-Image-Enhancer.png",
-        embeds = {
-            {
-                title       = "⚔️ [🎊 1 YR] Re:Rangers X — Merchant",
-                description = description,
-                color       = 0x1DB954,
-                footer      = {
-                    text     = "HamYai69Hub • Made by MitchAK • " .. os.date("%d/%m/%Y %H:%M"),
-                    icon_url = "https://i.postimg.cc/rwbBMph6/preview-Picsart-Ai-Image-Enhancer.png",
-                },
-            }
-        }
+        embeds = {{
+            title = "⚔️ [🎊 1 YR] Re:Rangers X — Merchant", description = description, color = 0x1DB954,
+            footer = { text = "HamYai69Hub • Made by MitchAK • " .. os.date("%d/%m/%Y %H:%M"), icon_url = "https://i.postimg.cc/rwbBMph6/preview-Picsart-Ai-Image-Enhancer.png" },
+        }},
     })
     doRequest(payload)
 end
@@ -702,8 +719,7 @@ end)
 local lastRewardsTime = 0
 task.spawn(function()
     local GameEndedUI = game:GetService("ReplicatedStorage")
-        :WaitForChild("Remote"):WaitForChild("Client")
-        :WaitForChild("UI"):WaitForChild("GameEndedUI")
+        :WaitForChild("Remote"):WaitForChild("Client"):WaitForChild("UI"):WaitForChild("GameEndedUI")
     GameEndedUI.OnClientEvent:Connect(function(event, data)
         if event == "Rewards - Items" then
             local now = tick()
@@ -715,14 +731,10 @@ task.spawn(function()
                 for _, v in pairs(data) do
                     local ok1, name   = pcall(function() return v.Name end)
                     local ok2, amount = pcall(function() return v.Amount.Value end)
-                    if ok1 and ok2 then
-                        table.insert(items, { name = name, amount = amount })
-                    end
+                    if ok1 and ok2 then table.insert(items, { name = name, amount = amount }) end
                 end
             end
-            task.spawn(function()
-                sendRoundEnd(items, elapsed)
-            end)
+            task.spawn(function() sendRoundEnd(items, elapsed) end)
             roundStartTime = nil
         end
     end)
@@ -778,78 +790,41 @@ Tabs.AutoJoin:AddToggle("FriendOnly", { Title = "🔒 Friend Only", Default = fa
 
 local SpiralElements = { "Aqua", "Fire", "Lightning", "Moon", "Dark", "Leaves", "Ice", "Sun" }
 local ElementDropdown = Tabs.AutoJoin:AddDropdown("SpiralElementSelect", {
-    Title   = "🌀 Spiral Element (Rifts only)",
-    Values  = SpiralElements,
-    Multi   = false,
-    Default = 1,
+    Title = "🌀 Spiral Element (Rifts only)", Values = SpiralElements, Multi = false, Default = 1,
 })
-ElementDropdown:OnChanged(function(v)
-    SelectedSpiralElement = v
-end)
+ElementDropdown:OnChanged(function(v) SelectedSpiralElement = v end)
 
 ChapterDropdown:OnChanged(function(v)
-    SelectedChapter = getFullChapterName(SelectedWorld, v, SelectedStage)
-    SelectedChapterDisplay = "Chapter " .. tostring(v)
+    local num = tonumber(v)
+    if num then
+        SelectedChapter = getFullChapterName(SelectedWorld, num, SelectedStage)
+        SelectedChapterDisplay = "Chapter " .. tostring(num)
+    end
 end)
 
 WorldDropdown:OnChanged(function(v)
     local data = StageData[SelectedStage] or StageData["Story"]
-    SelectedWorld = data.worldMap[v] or v
+    SelectedWorld        = data.worldMap[v] or v
     SelectedWorldDisplay = v
-    local chapters = data.chapterMap[SelectedWorld] or { "Coming Soon" }
-    updateDropdown(ChapterDropdown, chapters, false)
-    local curNum = tonumber(Options.ChapterSelect and Options.ChapterSelect.Value) or 1
-    local stillValid = false
-    for _, c in ipairs(chapters) do
-        if tonumber(c) == curNum then stillValid = true break end
-    end
-    if stillValid then
-        SelectedChapter = getFullChapterName(SelectedWorld, curNum, SelectedStage)
-        SelectedChapterDisplay = "Chapter " .. tostring(curNum)
-    else
-        SelectedChapter = getFullChapterName(SelectedWorld, chapters[1], SelectedStage)
-        SelectedChapterDisplay = "Chapter " .. tostring(chapters[1])
-        if _saveLoaded then ChapterDropdown:SetValue(chapters[1]) end
-    end
+    local chapters = data.chapterMap[SelectedWorld] or { 1 }
+    updateDropdown(ChapterDropdown, chapters, true)
+    local first = chapters[1]
+    SelectedChapter        = getFullChapterName(SelectedWorld, first, SelectedStage)
+    SelectedChapterDisplay = "Chapter " .. tostring(first)
 end)
 
 StageDropdown:OnChanged(function(v)
     SelectedStage = v
-    local data = StageData[v] or StageData["Story"]
+    local data       = StageData[v] or StageData["Story"]
     local firstWorld = data.worlds[1]
-    SelectedWorld = data.worldMap[firstWorld] or firstWorld
+    SelectedWorld        = data.worldMap[firstWorld] or firstWorld
     SelectedWorldDisplay = firstWorld
-    local chapters = data.chapterMap[SelectedWorld] or { "Coming Soon" }
-    updateDropdown(WorldDropdown, data.worlds, false)
-    if _saveLoaded then WorldDropdown:SetValue(firstWorld) end
-    task.defer(function()
-        local stageNow = SelectedStage
-        local data2    = StageData[stageNow] or StageData["Story"]
-        local chapters2 = data2.chapterMap[SelectedWorld] or { "Coming Soon" }
-        updateDropdown(ChapterDropdown, chapters2, false)
-        local curNum = tonumber(Options.ChapterSelect and Options.ChapterSelect.Value) or 1
-        local stillValid = false
-        for _, c in ipairs(chapters2) do
-            if tonumber(c) == curNum then stillValid = true break end
-        end
-        if not stillValid then
-            SelectedChapter = getFullChapterName(SelectedWorld, chapters2[1], stageNow)
-            SelectedChapterDisplay = "Chapter " .. tostring(chapters2[1])
-            if _saveLoaded then ChapterDropdown:SetValue(chapters2[1]) end
-        end
-    end)
-    local curNum = tonumber(Options.ChapterSelect and Options.ChapterSelect.Value) or 1
-    local stillValid = false
-    for _, c in ipairs(chapters) do
-        if tonumber(c) == curNum then stillValid = true break end
-    end
-    if stillValid then
-        SelectedChapter = getFullChapterName(SelectedWorld, curNum, v)
-        SelectedChapterDisplay = "Chapter " .. tostring(curNum)
-    else
-        SelectedChapter = getFullChapterName(SelectedWorld, chapters[1], v)
-        SelectedChapterDisplay = "Chapter " .. tostring(chapters[1])
-    end
+    local chapters = data.chapterMap[SelectedWorld] or { 1 }
+    local first    = chapters[1]
+    SelectedChapter        = getFullChapterName(SelectedWorld, first, v)
+    SelectedChapterDisplay = "Chapter " .. tostring(first)
+    updateDropdown(WorldDropdown,   data.worlds, true)
+    updateDropdown(ChapterDropdown, chapters,    true)
 end)
 
 Tabs.AutoJoin:AddSlider("StartDelay", {
@@ -861,59 +836,36 @@ Tabs.AutoJoin:AddToggle("AutoJoinToggle", { Title = "🚀 Auto Join", Default = 
         task.spawn(function()
             while Options.AutoJoinToggle.Value do
                 if isInLobby() then
-                    PlayRoomEvent:FireServer("Create")
-                    task.wait(0.5)
-
+                    PlayRoomEvent:FireServer("Create") ; task.wait(0.5)
                     if SelectedStage == "Ranger" then
-                        PlayRoomEvent:FireServer("Change-Mode", { KeepWorld = SelectedWorld, Mode = "Ranger Stage" })
-                        task.wait(0.3)
+                        PlayRoomEvent:FireServer("Change-Mode",    { KeepWorld = SelectedWorld, Mode = "Ranger Stage" }) ; task.wait(0.3)
                         PlayRoomEvent:FireServer("Change-World",   { World   = SelectedWorld   }) ; task.wait(0.3)
                         PlayRoomEvent:FireServer("Change-Chapter", { Chapter = SelectedChapter }) ; task.wait(0.3)
-
                     elseif SelectedStage == "Raids" then
-                        PlayRoomEvent:FireServer("Change-Mode", { KeepWorld = SelectedWorld, Mode = "Raids Stage" })
-                        task.wait(0.3)
-                        PlayRoomEvent:FireServer("Change-Chapter",    { Chapter    = SelectedChapter    }) ; task.wait(0.3)
-                        PlayRoomEvent:FireServer("Change-Difficulty", { Difficulty = SelectedDifficulty }) ; task.wait(0.3)
-
+                        PlayRoomEvent:FireServer("Change-Mode",      { KeepWorld = SelectedWorld, Mode = "Raids Stage" }) ; task.wait(0.3)
+                        PlayRoomEvent:FireServer("Change-World",     { World      = SelectedWorld      }) ; task.wait(0.3)
+                        PlayRoomEvent:FireServer("Change-Chapter",   { Chapter    = SelectedChapter    }) ; task.wait(0.3)
+                        PlayRoomEvent:FireServer("Change-Difficulty",{ Difficulty = SelectedDifficulty }) ; task.wait(0.3)
                     elseif SelectedStage == "Misc" then
                         if SelectedWorld == "SpiralInvasion" then
-                            local ok1 = pcall(function()
-                                PlayRoomEvent:FireServer("Change-Mode",  { Mode = "Calamity" })
-                            end) ; task.wait(0.3)
-                            local ok2 = pcall(function()
-                                PlayRoomEvent:FireServer("Change-World", { World = "Spiral Invasion" })
-                            end) ; task.wait(0.3)
-                            local ok3 = pcall(function()
-                                PlayRoomEvent:FireServer("Change-Chapter", { Chapter = SelectedChapter })
-                            end) ; task.wait(0.3)
-                            local ok4 = pcall(function()
-                                PlayRoomEvent:FireServer("Change-Difficulty", { Difficulty = SelectedDifficulty })
-                            end) ; task.wait(0.3)
-                            pcall(function()
-                                PlayRoomEvent:FireServer("Set-SpiralElement", {
-                                    Difficulty = SelectedDifficulty,
-                                    Element    = SelectedSpiralElement,
-                                })
-                            end) ; task.wait(0.3)
+                            pcall(function() PlayRoomEvent:FireServer("Change-Mode",  { Mode = "Calamity" }) end) ; task.wait(0.3)
+                            pcall(function() PlayRoomEvent:FireServer("Change-World", { World = "Spiral Invasion" }) end) ; task.wait(0.3)
+                            pcall(function() PlayRoomEvent:FireServer("Change-Chapter", { Chapter = SelectedChapter }) end) ; task.wait(0.3)
+                            pcall(function() PlayRoomEvent:FireServer("Change-Difficulty", { Difficulty = SelectedDifficulty }) end) ; task.wait(0.3)
+                            pcall(function() PlayRoomEvent:FireServer("Set-SpiralElement", { Difficulty = SelectedDifficulty, Element = SelectedSpiralElement }) end) ; task.wait(0.3)
                         else
-                            PlayRoomEvent:FireServer("Change-Mode", { Mode = SelectedWorld })
-                            task.wait(0.3)
-                            PlayRoomEvent:FireServer("Change-Chapter",    { Chapter    = SelectedChapter    }) ; task.wait(0.3)
-                            PlayRoomEvent:FireServer("Change-Difficulty", { Difficulty = SelectedDifficulty }) ; task.wait(0.3)
+                            PlayRoomEvent:FireServer("Change-Mode",      { Mode    = SelectedWorld      }) ; task.wait(0.3)
+                            PlayRoomEvent:FireServer("Change-Chapter",   { Chapter = SelectedChapter    }) ; task.wait(0.3)
+                            PlayRoomEvent:FireServer("Change-Difficulty",{ Difficulty = SelectedDifficulty }) ; task.wait(0.3)
                         end
-
                     else
-                        PlayRoomEvent:FireServer("Change-World",      { World      = SelectedWorld      }) ; task.wait(0.3)
-                        PlayRoomEvent:FireServer("Change-Chapter",    { Chapter    = SelectedChapter    }) ; task.wait(0.3)
-                        PlayRoomEvent:FireServer("Change-Difficulty", { Difficulty = SelectedDifficulty }) ; task.wait(0.3)
+                        PlayRoomEvent:FireServer("Change-World",     { World      = SelectedWorld      }) ; task.wait(0.3)
+                        PlayRoomEvent:FireServer("Change-Chapter",   { Chapter    = SelectedChapter    }) ; task.wait(0.3)
+                        PlayRoomEvent:FireServer("Change-Difficulty",{ Difficulty = SelectedDifficulty }) ; task.wait(0.3)
                     end
-
                     if Options.FriendOnly and Options.FriendOnly.Value then
-                        PlayRoomEvent:FireServer("Change-FriendOnly")
-                        task.wait(0.3)
+                        PlayRoomEvent:FireServer("Change-FriendOnly") ; task.wait(0.3)
                     end
-
                     PlayRoomEvent:FireServer("Submit")
                     task.wait(Options.StartDelay.Value)
                     PlayRoomEvent:FireServer("Start")
@@ -930,25 +882,16 @@ end)
 -- ===========================
 
 Tabs.Play:AddParagraph({ Title = "🎮 Play Settings", Content = "In-game automation tools" })
-
 Tabs.Play:AddToggle("AutoVoteRetry", { Title = "🔁 Auto Vote Retry", Default = false })
 
 task.spawn(function()
     local OnGame, GameEndedUI
     task.spawn(function()
-        local ok, v = pcall(function()
-            return game:GetService("ReplicatedStorage")
-                :WaitForChild("Remote", 30):WaitForChild("Server", 30)
-                :WaitForChild("OnGame", 30)
-        end)
+        local ok, v = pcall(function() return game:GetService("ReplicatedStorage"):WaitForChild("Remote", 30):WaitForChild("Server", 30):WaitForChild("OnGame", 30) end)
         if ok then OnGame = v end
     end)
     task.spawn(function()
-        local ok, v = pcall(function()
-            return game:GetService("ReplicatedStorage")
-                :WaitForChild("Remote", 30):WaitForChild("Client", 30)
-                :WaitForChild("UI", 30):WaitForChild("GameEndedUI", 30)
-        end)
+        local ok, v = pcall(function() return game:GetService("ReplicatedStorage"):WaitForChild("Remote", 30):WaitForChild("Client", 30):WaitForChild("UI", 30):WaitForChild("GameEndedUI", 30) end)
         if ok then
             GameEndedUI = v
             GameEndedUI.OnClientEvent:Connect(function(event)
@@ -958,10 +901,8 @@ task.spawn(function()
             end)
         end
     end)
-
     local lastFired  = 0
     local voteQueued = false
-
     while true do
         task.wait(0.5)
         if not voteQueued then continue end
@@ -969,12 +910,10 @@ task.spawn(function()
         if not OnGame then continue end
         local now = tick()
         if now - lastFired < 3 then continue end
-
         local voting = OnGame:FindFirstChild("Voting")
         if not voting then continue end
         local voteRetry = voting:FindFirstChild("VoteRetry")
         if not voteRetry then continue end
-
         lastFired  = now
         voteQueued = false
         pcall(function() voteRetry:FireServer() end)
@@ -982,12 +921,8 @@ task.spawn(function()
 end)
 
 Tabs.Play:AddInput("RematchWave", {
-    Title       = "🌊 Re-match at Wave",
-    Default     = "0",
-    Placeholder = "Enter wave number (0 = disabled)",
-    Numeric     = true,
+    Title = "🌊 Re-match at Wave", Default = "0", Placeholder = "Enter wave number (0 = disabled)", Numeric = true,
 })
-
 Tabs.Play:AddToggle("AutoRematch", { Title = "🔄 Auto Re-match", Default = false })
 
 local function getEndMatchEvent()
@@ -995,8 +930,7 @@ local function getEndMatchEvent()
     local remote  = RS:FindFirstChild("Remote")
     local server  = remote  and remote:FindFirstChild("Server")
     local onGame  = server  and server:FindFirstChild("OnGame")
-    local endMatch = onGame and onGame:FindFirstChild("EndMatch")
-    return endMatch
+    return onGame and onGame:FindFirstChild("EndMatch")
 end
 
 local EndMatchEvent = nil
@@ -1030,114 +964,66 @@ task.spawn(function()
         if currentWave >= targetWave and now - lastRematch > 5 then
             lastRematch = now
             EndMatchEvent = EndMatchEvent or getEndMatchEvent()
-            if EndMatchEvent then
-                pcall(function() EndMatchEvent:FireServer() end)
-            end
+            if EndMatchEvent then pcall(function() EndMatchEvent:FireServer() end) end
             print("[AutoRematch] Fired at wave " .. currentWave)
         end
     end
 end)
 
--- ===========================
---   Auto End Match (Timer)
--- ===========================
-
 Tabs.Play:AddParagraph({ Title = "⏰ Auto End Match", Content = "Automatically end match after the set duration" })
-
-Tabs.Play:AddInput("EndMatchMinutes", {
-    Title       = "⏱️ Duration (min)",
-    Default     = "5",
-    Placeholder = "e.g. 5",
-    Numeric     = true,
-})
-
+Tabs.Play:AddInput("EndMatchMinutes", { Title = "⏱️ Duration (min)", Default = "5", Placeholder = "e.g. 5", Numeric = true })
 Tabs.Play:AddToggle("AutoEndMatch", { Title = "🔚 Auto End Match", Default = false })
 
 task.spawn(function()
     local inGameSince   = nil
     local matchEndFired = false
     local waitingReward = false
-
     while true do
         task.wait(1)
         if not Options.AutoEndMatch.Value then
-            inGameSince   = nil
-            matchEndFired = false
-            waitingReward = false
-            continue
+            inGameSince = nil matchEndFired = false waitingReward = false continue
         end
         local minutes = tonumber(Options.EndMatchMinutes and Options.EndMatchMinutes.Value) or 0
         if minutes <= 0 then continue end
-
         if waitingReward then
             local rewardVisible = false
-            pcall(function()
-                rewardVisible = LocalPlayer.PlayerGui.RewardsUI.Main.Visible
-            end)
-            if rewardVisible then
-                inGameSince   = nil
-                matchEndFired = false
-                waitingReward = false
-                print("[AutoEndMatch] ✅ RewardsUI.Main visible → reset - waiting for next round")
-            end
+            pcall(function() rewardVisible = LocalPlayer.PlayerGui.RewardsUI.Main.Visible end)
+            if rewardVisible then inGameSince = nil matchEndFired = false waitingReward = false end
             continue
         end
-
         local gameInfoVisible = false
-        pcall(function()
-            gameInfoVisible = LocalPlayer.PlayerGui.HUD.InGame.Main.TOP.Visible
-        end)
-
+        pcall(function() gameInfoVisible = LocalPlayer.PlayerGui.HUD.InGame.Main.TOP.Visible end)
         if gameInfoVisible then
-            if not inGameSince then
-                inGameSince   = tick()
-                matchEndFired = false
-                print("[AutoEndMatch] ▶ Timer started " .. minutes .. " min")
-            end
+            if not inGameSince then inGameSince = tick() matchEndFired = false end
             local elapsed = tick() - inGameSince
             if elapsed >= minutes * 60 and not matchEndFired then
-                matchEndFired = true
-                waitingReward = true
+                matchEndFired = true waitingReward = true
                 EndMatchEvent = EndMatchEvent or getEndMatchEvent()
                 if EndMatchEvent then pcall(function() EndMatchEvent:FireServer() end) end
-                print("[AutoEndMatch] 🔚 Fire EndMatch after " .. minutes .. " min — waiting RewardsUI.Main")
             end
         else
-            if inGameSince and not matchEndFired then
-                print("[AutoEndMatch] Reset — GameInfo hidden")
-                inGameSince = nil
-            end
+            if inGameSince and not matchEndFired then inGameSince = nil end
         end
     end
 end)
 
--- ===========================
---   Auto Spiral Drill
--- ===========================
-
 Tabs.Play:AddParagraph({ Title = "🌀 Auto Spiral Drill", Content = "กดปุ่ม Spiral Drill อัตโนมัติเมื่อปุ่มปรากฏในเกม" })
-
 Tabs.Play:AddToggle("AutoSpiralDrill", { Title = "🌀 Auto Spiral Drill", Default = false })
 
 task.spawn(function()
     local lastFired = 0
     while true do
         task.wait(0.2)
-        if not Options.AutoSpiralDrill or not Options.AutoSpiralDrill.Value then
-            continue
-        end
+        if not Options.AutoSpiralDrill or not Options.AutoSpiralDrill.Value then continue end
         local visible = false
-        pcall(function()
-            visible = LocalPlayer.PlayerGui.HUD.InGame.SpiralDrillButton.Visible
-        end)
+        pcall(function() visible = LocalPlayer.PlayerGui.HUD.InGame.SpiralDrillButton.Visible end)
         local now = tick()
         if visible and now - lastFired >= 2 then
             lastFired = now
             pcall(function()
                 game:GetService("ReplicatedStorage")
                     :WaitForChild("Remote", 5):WaitForChild("Server", 5)
-                    :WaitForChild("UI", 5):WaitForChild("SpiralDrill", 5)
-                    :FireServer()
+                    :WaitForChild("UI", 5):WaitForChild("SpiralDrill", 5):FireServer()
             end)
         end
     end
@@ -1164,19 +1050,12 @@ local Items = {
 }
 
 local function getGold()
-    local ok, val = pcall(function()
-        return LocalPlayer.PlayerGui.HUD.MenuFrame.LeftSide.Frame.Gold.Numbers.Text
-    end)
+    local ok, val = pcall(function() return LocalPlayer.PlayerGui.HUD.MenuFrame.LeftSide.Frame.Gold.Numbers.Text end)
     return ok and val or "N/A"
 end
 
 Tabs.Merchant:AddParagraph({ Title = "🛒 Merchant", Content = "Auto buy when stock resets" })
-
-local GoldLabel = Tabs.Merchant:AddParagraph({
-    Title   = "💰 Gold",
-    Content = getGold(),
-})
-
+local GoldLabel = Tabs.Merchant:AddParagraph({ Title = "💰 Gold", Content = getGold() })
 local stockParagraph = Tabs.Merchant:AddParagraph({ Title = "📦 Stock", Content = "Loading..." })
 
 task.spawn(function()
@@ -1185,10 +1064,7 @@ task.spawn(function()
         pcall(function()
             if GoldLabel and GoldLabel.Frame then
                 for _, v in pairs(GoldLabel.Frame:GetDescendants()) do
-                    if v:IsA("TextLabel") and v.Text ~= "💰 Gold" then
-                        v.Text = getGold()
-                        break
-                    end
+                    if v:IsA("TextLabel") and v.Text ~= "💰 Gold" then v.Text = getGold() break end
                 end
             end
         end)
@@ -1201,9 +1077,7 @@ Tabs.Merchant:AddToggle("BuyAllToggle", { Title = "🛒 Buy All Items", Default 
             for _, itemName in ipairs(Items) do
                 local bought, newAmt = buyItemDirect(itemName)
                 if bought and canSendWebhook(itemName) then
-                    task.spawn(function()
-                        sendMerchantBuy(itemName, newAmt)
-                    end)
+                    task.spawn(function() sendMerchantBuy(itemName, newAmt) end)
                 end
                 task.wait(0.5)
             end
@@ -1213,19 +1087,11 @@ Tabs.Merchant:AddToggle("BuyAllToggle", { Title = "🛒 Buy All Items", Default 
     end
 end)
 
--- ===========================
---   Merchant Item Toggles + Stock Display
--- ===========================
-
 local MerchantFolder = game:GetService("ReplicatedStorage")
-    :WaitForChild("Player_Data")
-    :WaitForChild(LocalPlayer.Name)
-    :WaitForChild("Merchant")
+    :WaitForChild("Player_Data"):WaitForChild(LocalPlayer.Name):WaitForChild("Merchant")
 
 local function getMerchantStock(itemName)
-    local ok, item = pcall(function()
-        return MerchantFolder:WaitForChild(itemName, 2)
-    end)
+    local ok, item = pcall(function() return MerchantFolder:WaitForChild(itemName, 2) end)
     if not ok or not item then return nil, nil end
     local bought = item:FindFirstChild("BuyAmount")
     local qty    = item:FindFirstChild("Quantity")
@@ -1244,18 +1110,13 @@ task.spawn(function()
                 if not bought or not qty then return end
                 bought:GetPropertyChangedSignal("Value"):Connect(function()
                     local full = (bought.Value >= qty.Value) and " 🔴" or ""
-                    local newTitle = getIcon(itemName) .. " " .. itemName
-                        .. " (" .. bought.Value .. "/" .. qty.Value .. ")" .. full
+                    local newTitle = getIcon(itemName) .. " " .. itemName .. " (" .. bought.Value .. "/" .. qty.Value .. ")" .. full
                     pcall(function()
                         local fluent = game:GetService("CoreGui").ScreenGui.Frame.CanvasGroup.ScrollingFrame
                         for _, btn in pairs(fluent:GetChildren()) do
                             if btn:IsA("TextButton") then
-                                local tl = btn:FindFirstChild("Frame")
-                                    and btn.Frame:FindFirstChildOfClass("TextLabel")
-                                if tl and tl.Text:find(itemName, 1, true) then
-                                    tl.Text = newTitle
-                                    break
-                                end
+                                local tl = btn:FindFirstChild("Frame") and btn.Frame:FindFirstChildOfClass("TextLabel")
+                                if tl and tl.Text:find(itemName, 1, true) then tl.Text = newTitle break end
                             end
                         end
                     end)
@@ -1267,18 +1128,13 @@ end)
 
 for _, itemName in ipairs(Items) do
     local flag = "buy_" .. itemName:gsub("[%s%.]", "_")
-    local toggle = Tabs.Merchant:AddToggle(flag, {
-        Title   = getIcon(itemName) .. " " .. itemName,
-        Default = false,
-    })
+    local toggle = Tabs.Merchant:AddToggle(flag, { Title = getIcon(itemName) .. " " .. itemName, Default = false })
     toggle:OnChanged(function(value)
         autoSave()
         if value then
             task.spawn(function()
                 local bought, newAmt = buyItemDirect(itemName)
-                if bought and canSendWebhook(itemName) then
-                    sendMerchantBuy(itemName, newAmt)
-                end
+                if bought and canSendWebhook(itemName) then sendMerchantBuy(itemName, newAmt) end
                 task.wait(0.3)
             end)
         end
@@ -1298,17 +1154,14 @@ local function updateStockParagraph()
     pcall(function()
         for _, v in pairs(stockParagraph.Frame:GetDescendants()) do
             if v:IsA("TextLabel") and v.Text ~= "📦 Stock" and v.Text ~= "" then
-                v.Text = table.concat(lines, "\n")
-                break
+                v.Text = table.concat(lines, "\n") break
             end
         end
     end)
 end
 
 task.delay(1, updateStockParagraph)
-task.spawn(function()
-    while true do task.wait(60) updateStockParagraph() end
-end)
+task.spawn(function() while true do task.wait(60) updateStockParagraph() end end)
 
 task.spawn(function()
     for _, itemName in ipairs(Items) do
@@ -1318,17 +1171,13 @@ task.spawn(function()
                 local bought = item:WaitForChild("BuyAmount", 5)
                 if bought then
                     bought:GetPropertyChangedSignal("Value"):Connect(function()
-                        task.wait(0.1)
-                        updateStockParagraph()
+                        task.wait(0.1) updateStockParagraph()
                     end)
                 end
             end)
         end)
     end
 end)
-
--- ===========================
--- ===========================
 
 local function buyEnabledItems()
     for _, itemName in ipairs(Items) do
@@ -1358,110 +1207,63 @@ task.spawn(function()
                     if bought.Value ~= 0 then return end
                     if pending then return end
                     pending = true
-                    task.spawn(function()
-                        task.wait(1)
-                        pending = false
-                        buyEnabledItems()
-                    end)
+                    task.spawn(function() task.wait(1) pending = false buyEnabledItems() end)
                 end)
             end)
         end)
     end
 end)
 
-task.spawn(function()
-    task.wait(65)
-    while true do
-        task.wait(60)
-        buyEnabledItems()
-    end
-end)
+task.spawn(function() task.wait(65) while true do task.wait(60) buyEnabledItems() end end)
 
 -- ===========================
 --   Bounty Hunt Shop
 -- ===========================
 
-local pd_root = game:GetService("ReplicatedStorage")
-    :WaitForChild("Player_Data")
-    :WaitForChild(LocalPlayer.Name)
+local pd_root = game:GetService("ReplicatedStorage"):WaitForChild("Player_Data"):WaitForChild(LocalPlayer.Name)
 
 local function getShopPrice(shopFolder, category, itemName)
     local ok, v = pcall(function()
-        return pd_root:WaitForChild(shopFolder, 3)
-            :WaitForChild(category, 3)
-            :WaitForChild(itemName, 3)
-            :WaitForChild("CurrencyAmount", 3).Value
+        return pd_root:WaitForChild(shopFolder, 3):WaitForChild(category, 3):WaitForChild(itemName, 3):WaitForChild("CurrencyAmount", 3).Value
     end)
     return ok and tostring(math.floor(v)) or "?"
 end
 
-local BountyHuntEvent = game:GetService("ReplicatedStorage")
-    :WaitForChild("Remote"):WaitForChild("Server")
-    :WaitForChild("Gameplay"):WaitForChild("BountyHunt_Shop")
-
+local BountyHuntEvent = game:GetService("ReplicatedStorage"):WaitForChild("Remote"):WaitForChild("Server"):WaitForChild("Gameplay"):WaitForChild("BountyHunt_Shop")
 local BountyItems = {
-    { name = "Mero Fruit",      icon = "🍈" },
-    { name = "Soul Fragments",  icon = "💠" },
-    { name = "Trait Reroll",    icon = "🎲" },
-    { name = "Fire Fist's Hat", icon = "🎩" },
-    { name = "Gura Fruit",      icon = "🦈" },
-    { name = "Magu Fruit",      icon = "🌋" },
-    { name = "Pika Fruit",      icon = "⚡" },
-    { name = "Straw Hat",       icon = "👒" },
+    { name = "Mero Fruit",      icon = "🍈" }, { name = "Soul Fragments",  icon = "💠" },
+    { name = "Trait Reroll",    icon = "🎲" }, { name = "Fire Fist's Hat", icon = "🎩" },
+    { name = "Gura Fruit",      icon = "🦈" }, { name = "Magu Fruit",      icon = "🌋" },
+    { name = "Pika Fruit",      icon = "⚡" }, { name = "Straw Hat",       icon = "👒" },
     { name = "Yoru Blade",      icon = "⚔️" },
 }
 
 Tabs.Merchant:AddParagraph({ Title = "🎯 Bounty Hunt Shop", Content = "Buy items from Invasion Shop" })
 
 local function getBountyCoins()
-    local ok, v = pcall(function()
-        return game:GetService("ReplicatedStorage")
-            :WaitForChild("Player_Data")
-            :WaitForChild(LocalPlayer.Name)
-            :WaitForChild("Data")
-            :WaitForChild("Bounty Hunt Coins", 3).Value
-    end)
+    local ok, v = pcall(function() return game:GetService("ReplicatedStorage"):WaitForChild("Player_Data"):WaitForChild(LocalPlayer.Name):WaitForChild("Data"):WaitForChild("Bounty Hunt Coins", 3).Value end)
     return ok and tostring(v) or "N/A"
 end
 
-local BountyCoinLabel = Tabs.Merchant:AddParagraph({
-    Title   = "🎯 Bounty Hunt Coins",
-    Content = getBountyCoins(),
-})
-
+local BountyCoinLabel = Tabs.Merchant:AddParagraph({ Title = "🎯 Bounty Hunt Coins", Content = getBountyCoins() })
 task.spawn(function()
-    while true do
-        task.wait(3)
+    while true do task.wait(3)
         pcall(function()
             if BountyCoinLabel and BountyCoinLabel.Frame then
                 for _, v in pairs(BountyCoinLabel.Frame:GetDescendants()) do
-                    if v:IsA("TextLabel") and v.Text ~= "🎯 Bounty Hunt Coins" and v.Text ~= "" then
-                        v.Text = getBountyCoins()
-                        break
-                    end
+                    if v:IsA("TextLabel") and v.Text ~= "🎯 Bounty Hunt Coins" and v.Text ~= "" then v.Text = getBountyCoins() break end
                 end
             end
         end)
     end
 end)
 
-Tabs.Merchant:AddSlider("BountyAmount", {
-    Title   = "🔢 Amount to buy",
-    Min     = 1, Max = 99, Default = 1, Rounding = 0,
-})
-
+Tabs.Merchant:AddSlider("BountyAmount", { Title = "🔢 Amount to buy", Min = 1, Max = 99, Default = 1, Rounding = 0 })
 for _, item in ipairs(BountyItems) do
     local price = getShopPrice("BountyHunt_Shop", "BountyHunt", item.name)
     Tabs.Merchant:AddButton({
-        Title    = item.icon .. " " .. item.name .. "  [" .. price .. " 🎯]",
-        Callback = function()
-            task.spawn(function()
-                local amt = Options.BountyAmount and Options.BountyAmount.Value or 1
-                pcall(function()
-                    BountyHuntEvent:FireServer("BountyHunt", item.name, amt)
-                end)
-            end)
-        end,
+        Title = item.icon .. " " .. item.name .. "  [" .. price .. " 🎯]",
+        Callback = function() task.spawn(function() local amt = Options.BountyAmount and Options.BountyAmount.Value or 1 pcall(function() BountyHuntEvent:FireServer("BountyHunt", item.name, amt) end) end) end,
     })
 end
 
@@ -1469,55 +1271,35 @@ end
 --   JJK Raid Shop
 -- ===========================
 
-local JJKRaidEvent = game:GetService("ReplicatedStorage")
-    :WaitForChild("Remote"):WaitForChild("Server")
-    :WaitForChild("Gameplay"):WaitForChild("JJK_RaidShop")
-
+local JJKRaidEvent = game:GetService("ReplicatedStorage"):WaitForChild("Remote"):WaitForChild("Server"):WaitForChild("Gameplay"):WaitForChild("JJK_RaidShop")
 local JJKItems = {
-    { name = "Gorodo",           icon = "🎭" },
-    { name = "Soul Fragments",   icon = "💠" },
-    { name = "Trait Reroll",     icon = "🎲" },
-    { name = "Cursed Finger",    icon = "☠️" },
-    { name = "Perfect Stats Key",icon = "🔑" },
-    { name = "King's Shrine",    icon = "👑" },
-    { name = "Stats Key",        icon = "🗝️" },
-    { name = "Dr. Megga Punk",   icon = "🧪" },
+    { name = "Gorodo",           icon = "🎭" }, { name = "Soul Fragments",   icon = "💠" },
+    { name = "Trait Reroll",     icon = "🎲" }, { name = "Cursed Finger",    icon = "☠️" },
+    { name = "Perfect Stats Key",icon = "🔑" }, { name = "King's Shrine",    icon = "👑" },
+    { name = "Stats Key",        icon = "🗝️" }, { name = "Dr. Megga Punk",   icon = "🧪" },
 }
 
 Tabs.Merchant:AddParagraph({ Title = "⚔️ JJK Raid Shop", Content = "Buy items from The Tokyo Incident" })
 
 local function getCursedScrolls()
-    local ok, v = pcall(function()
-        return PlayerDataFolder:WaitForChild("Cursed Scrolls", 3).Value
-    end)
+    local ok, v = pcall(function() return PlayerDataFolder:WaitForChild("Cursed Scrolls", 3).Value end)
     return ok and tostring(v) or "N/A"
 end
-
 local CursedScrollsLabel = Tabs.Merchant:AddParagraph({ Title = "📜 Cursed Scrolls", Content = getCursedScrolls() })
 task.spawn(function()
-    while true do task.wait(3)
-        pcall(function()
-            for _, v in pairs(CursedScrollsLabel.Frame:GetDescendants()) do
-                if v:IsA("TextLabel") and v.Text ~= "📜 Cursed Scrolls" and v.Text ~= "" then
-                    v.Text = getCursedScrolls() break
-                end
-            end
-        end)
-    end
+    while true do task.wait(3) pcall(function()
+        for _, v in pairs(CursedScrollsLabel.Frame:GetDescendants()) do
+            if v:IsA("TextLabel") and v.Text ~= "📜 Cursed Scrolls" and v.Text ~= "" then v.Text = getCursedScrolls() break end
+        end
+    end) end
 end)
 
 Tabs.Merchant:AddSlider("JJKAmount", { Title = "🔢 Amount to buy", Min = 1, Max = 99, Default = 1, Rounding = 0 })
-
 for _, item in ipairs(JJKItems) do
     local price = getShopPrice("JJK_Raid_Shop", "JJK", item.name)
     Tabs.Merchant:AddButton({
-        Title    = item.icon .. " " .. item.name .. "  [" .. price .. " 📜]",
-        Callback = function()
-            task.spawn(function()
-                local amt = Options.JJKAmount and Options.JJKAmount.Value or 1
-                pcall(function() JJKRaidEvent:FireServer("JJK", item.name, amt) end)
-            end)
-        end,
+        Title = item.icon .. " " .. item.name .. "  [" .. price .. " 📜]",
+        Callback = function() task.spawn(function() local amt = Options.JJKAmount and Options.JJKAmount.Value or 1 pcall(function() JJKRaidEvent:FireServer("JJK", item.name, amt) end) end) end,
     })
 end
 
@@ -1526,51 +1308,34 @@ end
 -- ===========================
 
 local EsperItems = {
-    { name = "Esper Hair",       icon = "💇" },
-    { name = "Esper Phone",      icon = "📱" },
-    { name = "Charge Bomb",      icon = "💣" },
-    { name = "Stats Key",        icon = "🗝️" },
-    { name = "Perfect Stats Key",icon = "🔑" },
-    { name = "Trait Reroll",     icon = "🎲" },
-    { name = "Flower Brigade",   icon = "🌸" },
-    { name = "Cursed Finger",    icon = "☠️" },
+    { name = "Esper Hair",       icon = "💇" }, { name = "Esper Phone",      icon = "📱" },
+    { name = "Charge Bomb",      icon = "💣" }, { name = "Stats Key",        icon = "🗝️" },
+    { name = "Perfect Stats Key",icon = "🔑" }, { name = "Trait Reroll",     icon = "🎲" },
+    { name = "Flower Brigade",   icon = "🌸" }, { name = "Cursed Finger",    icon = "☠️" },
     { name = "Esper Tie",        icon = "👔" },
 }
 
 Tabs.Merchant:AddParagraph({ Title = "🔷 Esper Shop", Content = "Buy items from Esper Town" })
 
 local function getEsperTokens()
-    local ok, v = pcall(function()
-        return PlayerDataFolder:WaitForChild("Esper Token", 3).Value
-    end)
+    local ok, v = pcall(function() return PlayerDataFolder:WaitForChild("Esper Token", 3).Value end)
     return ok and tostring(v) or "N/A"
 end
-
 local EsperTokenLabel = Tabs.Merchant:AddParagraph({ Title = "🔷 Esper Token", Content = getEsperTokens() })
 task.spawn(function()
-    while true do task.wait(3)
-        pcall(function()
-            for _, v in pairs(EsperTokenLabel.Frame:GetDescendants()) do
-                if v:IsA("TextLabel") and v.Text ~= "🔷 Esper Token" and v.Text ~= "" then
-                    v.Text = getEsperTokens() break
-                end
-            end
-        end)
-    end
+    while true do task.wait(3) pcall(function()
+        for _, v in pairs(EsperTokenLabel.Frame:GetDescendants()) do
+            if v:IsA("TextLabel") and v.Text ~= "🔷 Esper Token" and v.Text ~= "" then v.Text = getEsperTokens() break end
+        end
+    end) end
 end)
 
 Tabs.Merchant:AddSlider("EsperAmount", { Title = "🔢 Amount to buy", Min = 1, Max = 99, Default = 1, Rounding = 0 })
-
 for _, item in ipairs(EsperItems) do
     local price = getShopPrice("JJK_Raid_Shop", "Esper", item.name)
     Tabs.Merchant:AddButton({
-        Title    = item.icon .. " " .. item.name .. "  [" .. price .. " 🔷]",
-        Callback = function()
-            task.spawn(function()
-                local amt = Options.EsperAmount and Options.EsperAmount.Value or 1
-                pcall(function() JJKRaidEvent:FireServer("Esper", item.name, amt) end)
-            end)
-        end,
+        Title = item.icon .. " " .. item.name .. "  [" .. price .. " 🔷]",
+        Callback = function() task.spawn(function() local amt = Options.EsperAmount and Options.EsperAmount.Value or 1 pcall(function() JJKRaidEvent:FireServer("Esper", item.name, amt) end) end) end,
     })
 end
 
@@ -1578,55 +1343,35 @@ end
 --   Calamity Shop — JJK
 -- ===========================
 
-local CalamityEvent = game:GetService("ReplicatedStorage")
-    :WaitForChild("Remote"):WaitForChild("Server")
-    :WaitForChild("Gameplay"):WaitForChild("Calamity_Shop")
-
+local CalamityEvent = game:GetService("ReplicatedStorage"):WaitForChild("Remote"):WaitForChild("Server"):WaitForChild("Gameplay"):WaitForChild("Calamity_Shop")
 local CalamityJJKItems = {
-    { name = "Cursed Finger",    icon = "☠️" },
-    { name = "Soul Fragments",   icon = "💠" },
-    { name = "Cursed Ring",      icon = "💍" },
-    { name = "Trait Reroll",     icon = "🎲" },
-    { name = "Strongest Seal",   icon = "🔒" },
-    { name = "Stats Key",        icon = "🗝️" },
-    { name = "Perfect Stats Key",icon = "🔑" },
-    { name = "Dr. Megga Punk",   icon = "🧪" },
+    { name = "Cursed Finger",    icon = "☠️" }, { name = "Soul Fragments",   icon = "💠" },
+    { name = "Cursed Ring",      icon = "💍" }, { name = "Trait Reroll",     icon = "🎲" },
+    { name = "Strongest Seal",   icon = "🔒" }, { name = "Stats Key",        icon = "🗝️" },
+    { name = "Perfect Stats Key",icon = "🔑" }, { name = "Dr. Megga Punk",   icon = "🧪" },
 }
 
 Tabs.Merchant:AddParagraph({ Title = "🌀 Calamity Shop (JJK)", Content = "Buy items from Shibuya Incident" })
 
 local function getCursedEssence()
-    local ok, v = pcall(function()
-        return PlayerDataFolder:WaitForChild("Cursed Essence", 3).Value
-    end)
+    local ok, v = pcall(function() return PlayerDataFolder:WaitForChild("Cursed Essence", 3).Value end)
     return ok and tostring(v) or "N/A"
 end
-
 local CursedEssenceLabel = Tabs.Merchant:AddParagraph({ Title = "🌀 Cursed Essence", Content = getCursedEssence() })
 task.spawn(function()
-    while true do task.wait(3)
-        pcall(function()
-            for _, v in pairs(CursedEssenceLabel.Frame:GetDescendants()) do
-                if v:IsA("TextLabel") and v.Text ~= "🌀 Cursed Essence" and v.Text ~= "" then
-                    v.Text = getCursedEssence() break
-                end
-            end
-        end)
-    end
+    while true do task.wait(3) pcall(function()
+        for _, v in pairs(CursedEssenceLabel.Frame:GetDescendants()) do
+            if v:IsA("TextLabel") and v.Text ~= "🌀 Cursed Essence" and v.Text ~= "" then v.Text = getCursedEssence() break end
+        end
+    end) end
 end)
 
 Tabs.Merchant:AddSlider("CalamityJJKAmount", { Title = "🔢 Amount to buy", Min = 1, Max = 99, Default = 1, Rounding = 0 })
-
 for _, item in ipairs(CalamityJJKItems) do
     local price = getShopPrice("Calamity_Shop", "JJK", item.name)
     Tabs.Merchant:AddButton({
-        Title    = item.icon .. " " .. item.name .. "  [" .. price .. " 🌀]",
-        Callback = function()
-            task.spawn(function()
-                local amt = Options.CalamityJJKAmount and Options.CalamityJJKAmount.Value or 1
-                pcall(function() CalamityEvent:FireServer("JJK", item.name, amt) end)
-            end)
-        end,
+        Title = item.icon .. " " .. item.name .. "  [" .. price .. " 🌀]",
+        Callback = function() task.spawn(function() local amt = Options.CalamityJJKAmount and Options.CalamityJJKAmount.Value or 1 pcall(function() CalamityEvent:FireServer("JJK", item.name, amt) end) end) end,
     })
 end
 
@@ -1635,57 +1380,37 @@ end
 -- ===========================
 
 local CalamityFFItems = {
-    { name = "Inhibitor Crown",               icon = "👑" },
-    { name = "Burning Eyepatch",              icon = "🔥" },
-    { name = "Joker Card",                    icon = "🃏" },
-    { name = "Sun Wheel",                     icon = "☀️" },
-    { name = "Perfect Stats Key",             icon = "🔑" },
-    { name = "Chrono Sword",                  icon = "⚔️" },
-    { name = "Trait Reroll",                  icon = "🎲" },
-    { name = "Cursed Finger",                 icon = "☠️" },
-    { name = "Star Ring",                     icon = "⭐" },
-    { name = "Stats Key",                     icon = "🗝️" },
-    { name = "Excalibur",                     icon = "⚔️" },
-    { name = "Special Fire Force Turnout Pants", icon = "🪖" },
-    { name = "Company 8 Fire Helmet",         icon = "🪖" },
-    { name = "Special Fire Force Coat",       icon = "🧥" },
+    { name = "Inhibitor Crown",               icon = "👑" }, { name = "Burning Eyepatch",              icon = "🔥" },
+    { name = "Joker Card",                    icon = "🃏" }, { name = "Sun Wheel",                     icon = "☀️" },
+    { name = "Perfect Stats Key",             icon = "🔑" }, { name = "Chrono Sword",                  icon = "⚔️" },
+    { name = "Trait Reroll",                  icon = "🎲" }, { name = "Cursed Finger",                 icon = "☠️" },
+    { name = "Star Ring",                     icon = "⭐" }, { name = "Stats Key",                     icon = "🗝️" },
+    { name = "Excalibur",                     icon = "⚔️" }, { name = "Special Fire Force Turnout Pants", icon = "🪖" },
+    { name = "Company 8 Fire Helmet",         icon = "🪖" }, { name = "Special Fire Force Coat",       icon = "🧥" },
     { name = "Dr. Megga Punk",                icon = "🧪" },
 }
 
 Tabs.Merchant:AddParagraph({ Title = "🔥 Calamity Shop (FF)", Content = "Buy items from The Great Cataclysm" })
 
 local function getSolToken()
-    local ok, v = pcall(function()
-        return PlayerDataFolder:WaitForChild("Sol Token", 3).Value
-    end)
+    local ok, v = pcall(function() return PlayerDataFolder:WaitForChild("Sol Token", 3).Value end)
     return ok and tostring(v) or "N/A"
 end
-
 local SolTokenLabel = Tabs.Merchant:AddParagraph({ Title = "💰 Sol Token", Content = getSolToken() })
 task.spawn(function()
-    while true do task.wait(3)
-        pcall(function()
-            for _, v in pairs(SolTokenLabel.Frame:GetDescendants()) do
-                if v:IsA("TextLabel") and v.Text ~= "💰 Sol Token" and v.Text ~= "" then
-                    v.Text = getSolToken() break
-                end
-            end
-        end)
-    end
+    while true do task.wait(3) pcall(function()
+        for _, v in pairs(SolTokenLabel.Frame:GetDescendants()) do
+            if v:IsA("TextLabel") and v.Text ~= "💰 Sol Token" and v.Text ~= "" then v.Text = getSolToken() break end
+        end
+    end) end
 end)
 
 Tabs.Merchant:AddSlider("CalamityFFAmount", { Title = "🔢 Amount to buy", Min = 1, Max = 99, Default = 1, Rounding = 0 })
-
 for _, item in ipairs(CalamityFFItems) do
     local price = getShopPrice("Calamity_Shop", "FireForce", item.name)
     Tabs.Merchant:AddButton({
-        Title    = item.icon .. " " .. item.name .. "  [" .. price .. " 💰]",
-        Callback = function()
-            task.spawn(function()
-                local amt = Options.CalamityFFAmount and Options.CalamityFFAmount.Value or 1
-                pcall(function() CalamityEvent:FireServer("FireForce", item.name, amt) end)
-            end)
-        end,
+        Title = item.icon .. " " .. item.name .. "  [" .. price .. " 💰]",
+        Callback = function() task.spawn(function() local amt = Options.CalamityFFAmount and Options.CalamityFFAmount.Value or 1 pcall(function() CalamityEvent:FireServer("FireForce", item.name, amt) end) end) end,
     })
 end
 
@@ -1693,61 +1418,38 @@ end
 --   Ghoul Hunt Exchange
 -- ===========================
 
-local GhoulHuntEvent = game:GetService("ReplicatedStorage")
-    :WaitForChild("Remote"):WaitForChild("Server")
-    :WaitForChild("Gameplay"):WaitForChild("GhoulHuntExchange")
-
+local GhoulHuntEvent = game:GetService("ReplicatedStorage"):WaitForChild("Remote"):WaitForChild("Server"):WaitForChild("Gameplay"):WaitForChild("GhoulHuntExchange")
 local GhoulHuntItems = {
-    { name = "Owl Fragment",    icon = "🦉" },
-    { name = "Stats Key",       icon = "🗝️" },
-    { name = "Quinque Box",     icon = "📦" },
-    { name = "Gourmet Meal",    icon = "🥩" },
-    { name = "Ranger Crystal",  icon = "🔮" },
-    { name = "Death Shard",     icon = "💀" },
+    { name = "Owl Fragment",    icon = "🦉" }, { name = "Stats Key",       icon = "🗝️" },
+    { name = "Quinque Box",     icon = "📦" }, { name = "Gourmet Meal",    icon = "🥩" },
+    { name = "Ranger Crystal",  icon = "🔮" }, { name = "Death Shard",     icon = "💀" },
 }
 
 Tabs.Merchant:AddParagraph({ Title = "👁️ Ghoul Hunt Exchange", Content = "Buy items from Ghoul Hunt" })
 
 local function getRCCells()
-    local ok, v = pcall(function()
-        return PlayerDataFolder:WaitForChild("RCCells", 3).Value
-    end)
+    local ok, v = pcall(function() return PlayerDataFolder:WaitForChild("RCCells", 3).Value end)
     return ok and tostring(v) or "N/A"
 end
-
 local RCCellsLabel = Tabs.Merchant:AddParagraph({ Title = "🔴 RC Cells", Content = getRCCells() })
 task.spawn(function()
-    while true do task.wait(3)
-        pcall(function()
-            for _, v in pairs(RCCellsLabel.Frame:GetDescendants()) do
-                if v:IsA("TextLabel") and v.Text ~= "🔴 RC Cells" and v.Text ~= "" then
-                    v.Text = getRCCells() break
-                end
-            end
-        end)
-    end
+    while true do task.wait(3) pcall(function()
+        for _, v in pairs(RCCellsLabel.Frame:GetDescendants()) do
+            if v:IsA("TextLabel") and v.Text ~= "🔴 RC Cells" and v.Text ~= "" then v.Text = getRCCells() break end
+        end
+    end) end
 end)
 
 Tabs.Merchant:AddSlider("GhoulHuntAmount", { Title = "🔢 Amount to buy", Min = 1, Max = 99, Default = 1, Rounding = 0 })
-
 for _, item in ipairs(GhoulHuntItems) do
     local price = getShopPrice("GhoulHunt_Shop", "GhoulHunt", item.name)
     if price == "?" then
-        local ok, v = pcall(function()
-            return pd_root:WaitForChild("GhoulHunt", 2)
-                :WaitForChild(item.name, 2)
-                :WaitForChild("CurrencyAmount", 2).Value
-        end)
+        local ok, v = pcall(function() return pd_root:WaitForChild("GhoulHunt", 2):WaitForChild(item.name, 2):WaitForChild("CurrencyAmount", 2).Value end)
         if ok then price = tostring(math.floor(v)) end
     end
     Tabs.Merchant:AddButton({
-        Title    = item.icon .. " " .. item.name .. "  [" .. price .. " 🔴]",
-        Callback = function()
-            task.spawn(function()
-                local amt = Options.GhoulHuntAmount and Options.GhoulHuntAmount.Value or 1
-                pcall(function() GhoulHuntEvent:FireServer(item.name, amt) end)
-            end)
-        end,
+        Title = item.icon .. " " .. item.name .. "  [" .. price .. " 🔴]",
+        Callback = function() task.spawn(function() local amt = Options.GhoulHuntAmount and Options.GhoulHuntAmount.Value or 1 pcall(function() GhoulHuntEvent:FireServer(item.name, amt) end) end) end,
     })
 end
 
@@ -1755,32 +1457,20 @@ end
 --   Trashy Shop
 -- ===========================
 
-local TrashyShopEvent = game:GetService("ReplicatedStorage")
-    :WaitForChild("Remote"):WaitForChild("Server")
-    :WaitForChild("Gameplay"):WaitForChild("TrashGroundRaid_Shop")
-
+local TrashyShopEvent = game:GetService("ReplicatedStorage"):WaitForChild("Remote"):WaitForChild("Server"):WaitForChild("Gameplay"):WaitForChild("TrashGroundRaid_Shop")
 local TrashyShopItems = {
-    { name = "Glove Jinki",       icon = "🧤" },
-    { name = "Trait Reroll",      icon = "🎲" },
-    { name = "Cursed Finger",     icon = "☠️" },
-    { name = "Perfect Stats Key", icon = "🗝️" },
-    { name = "Umbrella Jinki",    icon = "☂️" },
-    { name = "Scissor Jinki",     icon = "✂️" },
+    { name = "Glove Jinki",       icon = "🧤" }, { name = "Trait Reroll",      icon = "🎲" },
+    { name = "Cursed Finger",     icon = "☠️" }, { name = "Perfect Stats Key", icon = "🗝️" },
+    { name = "Umbrella Jinki",    icon = "☂️" }, { name = "Scissor Jinki",     icon = "✂️" },
     { name = "Stats Key",         icon = "🔑" },
 }
 
 Tabs.Merchant:AddParagraph({ Title = "🗑️ Trashy Shop", Content = "Buy items from Trash Ground Raid" })
 Tabs.Merchant:AddSlider("TrashyShopAmount", { Title = "🔢 Amount to buy", Min = 1, Max = 99, Default = 1, Rounding = 0 })
-
 for _, item in ipairs(TrashyShopItems) do
     Tabs.Merchant:AddButton({
-        Title    = item.icon .. " " .. item.name,
-        Callback = function()
-            task.spawn(function()
-                local amt = Options.TrashyShopAmount and Options.TrashyShopAmount.Value or 1
-                pcall(function() TrashyShopEvent:FireServer("TrashGround", item.name, amt) end)
-            end)
-        end,
+        Title = item.icon .. " " .. item.name,
+        Callback = function() task.spawn(function() local amt = Options.TrashyShopAmount and Options.TrashyShopAmount.Value or 1 pcall(function() TrashyShopEvent:FireServer("TrashGround", item.name, amt) end) end) end,
     })
 end
 
@@ -1788,88 +1478,48 @@ end
 --   CRAFTING TAB
 -- ===========================
 
-local CraftingEvent = game:GetService("ReplicatedStorage")
-    :WaitForChild("Remote"):WaitForChild("Server")
-    :WaitForChild("Crafting"):WaitForChild("Event")
+local CraftingEvent = game:GetService("ReplicatedStorage"):WaitForChild("Remote"):WaitForChild("Server"):WaitForChild("Crafting"):WaitForChild("Event")
 
 local CraftingMaterials = {
-    { name = "Holy Sword"           },
-    { name = "Rimetsuken"           },
-    { name = "Readers Phone"        },
-    { name = "Anger Of The Owl"     },
-    { name = "Shinobi Mask"         },
-    { name = "Spiral Negation Core" },
-    { name = "Streamers Milestone"  },
-    { name = "Shadow Arrow"         },
-    { name = "Leaders Cape"         },
-    { name = "Nameless Glasses"     },
-    { name = "Assassin's Spear"     },
-    { name = "Lucky Ticket"         },
-    { name = "Chaostic Sword"       },
-    { name = "Scorpion Mask"        },
-    { name = "Jason 14's"           },
-    { name = "Ghoul Mask"           },
-    { name = "Emperor Crown"        },
-    { name = "Cosmic Visor"         },
-    { name = "Cursed Mark"          },
-    { name = "Golden Cloud"         },
-    { name = "Scroll Of Sage"       },
-    { name = "Golden Handhook"      },
-    { name = "West Blue Fish"       },
-    { name = "Dragon Orb"           },
+    { name = "Holy Sword" },      { name = "Rimetsuken" },        { name = "Readers Phone" },
+    { name = "Anger Of The Owl" },{ name = "Shinobi Mask" },      { name = "Spiral Negation Core" },
+    { name = "Streamers Milestone" },{ name = "Shadow Arrow" },   { name = "Leaders Cape" },
+    { name = "Nameless Glasses" },{ name = "Assassin's Spear" },  { name = "Lucky Ticket" },
+    { name = "Chaostic Sword" },  { name = "Scorpion Mask" },     { name = "Jason 14's" },
+    { name = "Ghoul Mask" },      { name = "Emperor Crown" },     { name = "Cosmic Visor" },
+    { name = "Cursed Mark" },     { name = "Golden Cloud" },      { name = "Scroll Of Sage" },
+    { name = "Golden Handhook" }, { name = "West Blue Fish" },    { name = "Dragon Orb" },
 }
 
 local CraftingGears = {
-    { name = "Blacklight Reaver"         },
-    { name = "Blacklight Reaver Helmet"  },
-    { name = "Blacklight Reaver Wings"   },
-    { name = "Blacklight Reaver Boots"   },
-    { name = "Eclipse Edge"              },
-    { name = "Crown of Eternity"         },
-    { name = "Aetherial Lance"           },
-    { name = "Dragonfang Blade"          },
-    { name = "Earthshatter Maul"         },
-    { name = "Phoenix Cloak"             },
-    { name = "Celestial Crown"           },
-    { name = "Wings of the Valkyrie"     },
-    { name = "Shadowsteel Helm"          },
-    { name = "Starfire Bow"              },
-    { name = "Runebound Chestplate"      },
-    { name = "Infernal Blade"            },
-    { name = "Frozen Fang Daggers"       },
-    { name = "Silver-Edged Saber"        },
-    { name = "Leather Armor"             },
-    { name = "Stormbreaker Shield"       },
-    { name = "Gilded Dagger"             },
-    { name = "Flame-Touched Gauntlets"   },
-    { name = "Piercing Longbow"          },
+    { name = "Blacklight Reaver" },        { name = "Blacklight Reaver Helmet" },
+    { name = "Blacklight Reaver Wings" },  { name = "Blacklight Reaver Boots" },
+    { name = "Eclipse Edge" },             { name = "Crown of Eternity" },
+    { name = "Aetherial Lance" },          { name = "Dragonfang Blade" },
+    { name = "Earthshatter Maul" },        { name = "Phoenix Cloak" },
+    { name = "Celestial Crown" },          { name = "Wings of the Valkyrie" },
+    { name = "Shadowsteel Helm" },         { name = "Starfire Bow" },
+    { name = "Runebound Chestplate" },     { name = "Infernal Blade" },
+    { name = "Frozen Fang Daggers" },      { name = "Silver-Edged Saber" },
+    { name = "Leather Armor" },            { name = "Stormbreaker Shield" },
+    { name = "Gilded Dagger" },            { name = "Flame-Touched Gauntlets" },
+    { name = "Piercing Longbow" },
 }
 
 Tabs.Crafting:AddParagraph({ Title = "⚒️ Crafting", Content = "Craft items via Crafting remote" })
-
--- Material section
 Tabs.Crafting:AddParagraph({ Title = "🧪 Material", Content = "" })
 for _, item in ipairs(CraftingMaterials) do
     Tabs.Crafting:AddButton({
-        Title    = "🔨 " .. item.name,
-        Callback = function()
-            task.spawn(function()
-                pcall(function() CraftingEvent:FireServer(item.name, "", "") end)
-            end)
-        end,
+        Title = "🔨 " .. item.name,
+        Callback = function() task.spawn(function() pcall(function() CraftingEvent:FireServer(item.name, "", "") end) end) end,
     })
 end
 
--- Gears section
 Tabs.Crafting:AddParagraph({ Title = "⚔️ Gears", Content = "" })
 for _, item in ipairs(CraftingGears) do
     Tabs.Crafting:AddButton({
-        Title    = "🔩 " .. item.name,
-        Callback = function()
-            task.spawn(function()
-                pcall(function() CraftingEvent:FireServer(item.name, "", "") end)
-            end)
-        end,
+        Title = "🔩 " .. item.name,
+        Callback = function() task.spawn(function() pcall(function() CraftingEvent:FireServer(item.name, "", "") end) end) end,
     })
 end
 
@@ -1877,36 +1527,22 @@ end
 --   Souls section
 -- ===========================
 
-local SoulUpgrade = game:GetService("ReplicatedStorage")
-    :WaitForChild("Remote"):WaitForChild("Server")
-    :WaitForChild("Crafting"):WaitForChild("SoulUpgrade")
+local SoulUpgrade = game:GetService("ReplicatedStorage"):WaitForChild("Remote"):WaitForChild("Server"):WaitForChild("Crafting"):WaitForChild("SoulUpgrade")
 
 local function makeSoulList(baseName, tiers)
     local list = {}
     table.insert(list, baseName)
     local romanMap = { "I", "II", "III", "IV", "V" }
-    for i = 1, (tiers or 5) do
-        table.insert(list, baseName .. " [" .. romanMap[i] .. "]")
-    end
+    for i = 1, (tiers or 5) do table.insert(list, baseName .. " [" .. romanMap[i] .. "]") end
     return list
 end
 
 local InfernalList = makeSoulList("Infernal Mother")
-
 local SoulNames = {
-    "The Soul Of Chances",
-    "The Soul Of Fire",
-    "The Soul Of Greed",
-    "The Soul Of Power",
-    "The Soul Of Prejudice",
-    "The Soul Of Punch",
-    "The Soul Of Rage",
-    "The Soul Of Sloth",
-    "The Soul Of The Farmer",
-    "The Soul Of The Riches",
-    "The Soul Of The Universe",
-    "The Soul Of Undying",
-    "The Soul Of War",
+    "The Soul Of Chances", "The Soul Of Fire", "The Soul Of Greed", "The Soul Of Power",
+    "The Soul Of Prejudice", "The Soul Of Punch", "The Soul Of Rage", "The Soul Of Sloth",
+    "The Soul Of The Farmer", "The Soul Of The Riches", "The Soul Of The Universe",
+    "The Soul Of Undying", "The Soul Of War",
 }
 
 local allSoulGroups = {}
@@ -1916,20 +1552,15 @@ for _, name in ipairs(SoulNames) do
 end
 
 Tabs.Crafting:AddParagraph({ Title = "👻 Souls", Content = "Toggle to automatically upgrade Souls as fast as possible" })
-
 for i, group in ipairs(allSoulGroups) do
     local toggleKey = "SoulToggle_" .. i
     Tabs.Crafting:AddToggle(toggleKey, { Title = group.label, Default = false })
-
     local capturedList = group.list
     local capturedKey  = toggleKey
     task.spawn(function()
         while true do
             task.wait(0.05)
-            if not (Options[capturedKey] and Options[capturedKey].Value) then
-                task.wait(0.2)
-                continue
-            end
+            if not (Options[capturedKey] and Options[capturedKey].Value) then task.wait(0.2) continue end
             for _, soulName in ipairs(capturedList) do
                 if not (Options[capturedKey] and Options[capturedKey].Value) then break end
                 pcall(function() SoulUpgrade:FireServer(soulName) end)
@@ -1968,7 +1599,6 @@ local SelectedEventWorld   = "Ghoul Hunt"
 local SelectedEventChapter = 1
 
 Tabs.Event:AddParagraph({ Title = "⭐ Event", Content = "Select Event to farm" })
-
 local EventStageDropdown = Tabs.Event:AddDropdown("EventStageSelect", {
     Title = "🎮 Event", Values = { "Ghoul Hunt", "Colony Rush", "Boss Attack" }, Multi = false, Default = 1,
 })
@@ -1981,18 +1611,12 @@ for _, edata in pairs(EventStageData) do
         if not found then table.insert(_allEventWorlds, w) end
     end
 end
-local EventWorldDropdown = Tabs.Event:AddDropdown("EventWorldSelect", {
-    Title   = "🌍 World",
-    Values  = _allEventWorlds,
-    Multi   = false,
-    Default = 1,
-})
 
+local EventWorldDropdown = Tabs.Event:AddDropdown("EventWorldSelect", {
+    Title = "🌍 World", Values = _allEventWorlds, Multi = false, Default = 1,
+})
 local EventChapterDropdown = Tabs.Event:AddDropdown("EventChapterSelect", {
-    Title   = "📖 Chapter",
-    Values  = {1, 2, 3},
-    Multi   = false,
-    Default = 1,
+    Title = "📖 Chapter", Values = {1, 2, 3}, Multi = false, Default = 1,
 })
 
 EventStageDropdown:OnChanged(function(v)
@@ -2006,13 +1630,8 @@ EventStageDropdown:OnChanged(function(v)
     local wdata = data.worldMap[firstWorld]
     local curNum = tonumber(Options.EventChapterSelect and Options.EventChapterSelect.Value) or 1
     local stillValid = false
-    for _, c in ipairs(wdata.chapters) do
-        if tonumber(c) == curNum then stillValid = true break end
-    end
-    if not stillValid then
-        SelectedEventChapter = wdata.chapters[1]
-        EventChapterDropdown:SetValue(wdata.chapters[1])
-    end
+    for _, c in ipairs(wdata.chapters) do if tonumber(c) == curNum then stillValid = true break end end
+    if not stillValid then SelectedEventChapter = wdata.chapters[1] EventChapterDropdown:SetValue(wdata.chapters[1]) end
 end)
 
 EventWorldDropdown:OnChanged(function(v)
@@ -2022,22 +1641,13 @@ EventWorldDropdown:OnChanged(function(v)
     local wdata = stageData.worldMap[v] or stageData.worldMap[stageData.worlds[1]]
     local curNum = tonumber(Options.EventChapterSelect and Options.EventChapterSelect.Value) or 1
     local stillValid = false
-    for _, c in ipairs(wdata.chapters) do
-        if tonumber(c) == curNum then stillValid = true break end
-    end
-    if not stillValid then
-        SelectedEventChapter = wdata.chapters[1]
-        EventChapterDropdown:SetValue(wdata.chapters[1])
-    end
+    for _, c in ipairs(wdata.chapters) do if tonumber(c) == curNum then stillValid = true break end end
+    if not stillValid then SelectedEventChapter = wdata.chapters[1] EventChapterDropdown:SetValue(wdata.chapters[1]) end
 end)
 
-EventChapterDropdown:OnChanged(function(v)
-    SelectedEventChapter = v
-end)
+EventChapterDropdown:OnChanged(function(v) SelectedEventChapter = v end)
 
-Tabs.Event:AddSlider("EventStartDelay", {
-    Title = "⏱️ Start Delay (seconds)", Min = 1, Max = 10, Default = 3, Rounding = 0,
-})
+Tabs.Event:AddSlider("EventStartDelay", { Title = "⏱️ Start Delay (seconds)", Min = 1, Max = 10, Default = 3, Rounding = 0 })
 
 Tabs.Event:AddToggle("EventAutoJoin", { Title = "🚀 Auto Join", Default = false }):OnChanged(function()
     if Options.EventAutoJoin.Value then
@@ -2045,18 +1655,12 @@ Tabs.Event:AddToggle("EventAutoJoin", { Title = "🚀 Auto Join", Default = fals
             while Options.EventAutoJoin.Value do
                 if isInLobby() then
                     local stageData = EventStageData[SelectedEventStage] or EventStageData["Ghoul Hunt"]
-                    local wdata = stageData.worldMap[SelectedEventWorld]
-                        or stageData.worldMap[stageData.worlds[1]]
-
-                    PlayRoomEvent:FireServer("Create")
-                    task.wait(0.5)
-
+                    local wdata = stageData.worldMap[SelectedEventWorld] or stageData.worldMap[stageData.worlds[1]]
+                    PlayRoomEvent:FireServer("Create") ; task.wait(0.5)
                     if SelectedEventStage == "Ghoul Hunt" then
-                        PlayRoomEvent:FireServer("Fate Mode")
-                        task.wait(0.3)
+                        PlayRoomEvent:FireServer("Fate Mode") ; task.wait(0.3)
                     elseif SelectedEventStage == "Boss Attack" then
-                        PlayRoomEvent:FireServer("Boss-Attack-2.5")
-                        task.wait(0.3)
+                        PlayRoomEvent:FireServer("Boss-Attack-2.5") ; task.wait(0.3)
                     else
                         local chapterKey  = wdata.chapterKey or wdata.key
                         local chapterName = chapterKey .. "_Act" .. tostring(SelectedEventChapter)
@@ -2064,10 +1668,7 @@ Tabs.Event:AddToggle("EventAutoJoin", { Title = "🚀 Auto Join", Default = fals
                         PlayRoomEvent:FireServer("Change-World",   { World   = wdata.key  }) ; task.wait(0.3)
                         PlayRoomEvent:FireServer("Change-Chapter", { Chapter = chapterName }) ; task.wait(0.3)
                     end
-
-                    local ok = pcall(function()
-                        PlayRoomEvent:FireServer("Submit")
-                    end)
+                    local ok = pcall(function() PlayRoomEvent:FireServer("Submit") end)
                     if ok then
                         task.wait(Options.EventStartDelay.Value)
                         PlayRoomEvent:FireServer("Start")
@@ -2084,56 +1685,37 @@ Tabs.Event:AddToggle("EventAutoJoin", { Title = "🚀 Auto Join", Default = fals
 end)
 
 -- ===========================
---   SETTINGS TAB — Discord
+--   SETTINGS TAB
 -- ===========================
 
 Tabs.Settings:AddParagraph({ Title = "🔗 Discord Webhook", Content = "Configure Discord notifications" })
 
 Tabs.Settings:AddInput("WebhookURL", {
-    Title       = "🔗 Webhook URL",
-    Default     = "",
-    Placeholder = "https://discord.com/api/webhooks/...",
-    Numeric     = false,
-}):OnChanged(function(v)
-    DiscordConfig.webhookURL = v
-end)
+    Title = "🔗 Webhook URL", Default = "", Placeholder = "https://discord.com/api/webhooks/...", Numeric = false,
+}):OnChanged(function(v) DiscordConfig.webhookURL = v end)
 
-Tabs.Settings:AddToggle("DiscordEnabled", { Title = "🔔 Enable Discord", Default = false }):OnChanged(function(v)
-    DiscordConfig.enabled = v
-end)
+Tabs.Settings:AddToggle("DiscordEnabled", { Title = "🔔 Enable Discord", Default = false }):OnChanged(function(v) DiscordConfig.enabled = v end)
 
 Tabs.Settings:AddInput("DiscordUserID", {
-    Title       = "🆔 Discord User ID (Ping)",
-    Default     = "",
-    Placeholder = "123456789012345678",
-    Numeric     = false,
-}):OnChanged(function(v)
-    DiscordConfig.userID = v
-end)
+    Title = "🆔 Discord User ID (Ping)", Default = "", Placeholder = "123456789012345678", Numeric = false,
+}):OnChanged(function(v) DiscordConfig.userID = v end)
 
-Tabs.Settings:AddToggle("PingOnItem", { Title = "🔔 Ping on item", Default = false }):OnChanged(function(v)
-    DiscordConfig.pingOnItem = v
-end)
+Tabs.Settings:AddToggle("PingOnItem", { Title = "🔔 Ping on item", Default = false }):OnChanged(function(v) DiscordConfig.pingOnItem = v end)
 
 Tabs.Settings:AddButton({
-    Title   = "🧪 Test Webhook",
+    Title = "🧪 Test Webhook",
     Callback = function()
         task.spawn(function()
             local payload = HttpService:JSONEncode({
-                username   = "HamYai69Hub",
+                username = "HamYai69Hub",
                 avatar_url = "https://i.postimg.cc/rwbBMph6/preview-Picsart-Ai-Image-Enhancer.png",
-                embeds = {
-                    {
-                        title       = "[🎊 1 YR] Re:Rangers X",
-                        description = "Hello! It's Me **HamYai69Hub**\n\n*Webhook Working!*",
-                        color       = 0x7B2FBE,
-                        image       = { url = "https://i.pinimg.com/originals/fc/a8/a7/fca8a76672f1f6f3da7f5d0d96d79dce.jpg" },
-                        footer      = {
-                            text     = "HamYai69Hub • Made by MitchAK • " .. os.date("%d/%m/%Y %H:%M"),
-                            icon_url = "https://i.postimg.cc/rwbBMph6/preview-Picsart-Ai-Image-Enhancer.png",
-                        },
-                    }
-                }
+                embeds = {{
+                    title = "[🎊 1 YR] Re:Rangers X",
+                    description = "Hello! It's Me **HamYai69Hub**\n\n*Webhook Working!*",
+                    color = 0x7B2FBE,
+                    image = { url = "https://i.pinimg.com/originals/fc/a8/a7/fca8a76672f1f6f3da7f5d0d96d79dce.jpg" },
+                    footer = { text = "HamYai69Hub • Made by MitchAK • " .. os.date("%d/%m/%Y %H:%M"), icon_url = "https://i.postimg.cc/rwbBMph6/preview-Picsart-Ai-Image-Enhancer.png" },
+                }},
             })
             doRequest(payload)
         end)
@@ -2142,11 +1724,18 @@ Tabs.Settings:AddButton({
 })
 
 -- ===========================
+--   Auto Daily Rewards
+--   toggle = flag เฉยๆ ทำงานครั้งเดียวตอนรันสคริป
+-- ===========================
+
+Tabs.Settings:AddParagraph({ Title = "📅 Auto Daily Rewards", Content = "กดรับรางวัลรายวัน Day 1-7 อัตโนมัติ (ทำงานครั้งเดียวตอนรันสคริป)" })
+Tabs.Settings:AddToggle("AutoDailyRewards", { Title = "📅 Auto Daily Rewards", Default = false })
+
+-- ===========================
 --   Auto Minimize UI
 -- ===========================
 
 Tabs.Settings:AddParagraph({ Title = "🪟 UI Settings", Content = "ตั้งค่า UI เพิ่มเติม" })
-
 Tabs.Settings:AddToggle("AutoMinimizeOnLoad", { Title = "📌 พับ UI อัตโนมัติเมื่อสคริปโหลด", Default = false })
 
 -- ===========================
@@ -2170,9 +1759,7 @@ end)
 -- ===========================
 
 local function antiAfk()
-    pcall(function()
-        Players.LocalPlayer.Idled:Connect(function() end)
-    end)
+    pcall(function() Players.LocalPlayer.Idled:Connect(function() end) end)
     task.spawn(function()
         local VIM = game:GetService("VirtualInputManager")
         while true do
@@ -2181,11 +1768,7 @@ local function antiAfk()
             pcall(function()
                 local char = LocalPlayer.Character
                 local hum  = char and char:FindFirstChildOfClass("Humanoid")
-                if hum then
-                    hum:Move(Vector3.new(0.01, 0, 0), true)
-                    task.wait(0.1)
-                    hum:Move(Vector3.new(0, 0, 0), true)
-                end
+                if hum then hum:Move(Vector3.new(0.01, 0, 0), true) task.wait(0.1) hum:Move(Vector3.new(0, 0, 0), true) end
             end)
         end
     end)
@@ -2195,7 +1778,6 @@ antiAfk()
 Window:SelectTab(1)
 SaveManager:LoadAutoloadConfig()
 
--- Auto minimize after load
 task.spawn(function()
     task.wait(2.5)
     if Options.AutoMinimizeOnLoad and Options.AutoMinimizeOnLoad.Value then
@@ -2205,7 +1787,9 @@ task.spawn(function()
 end)
 
 -- ===========================
+--   POST-LOAD SYNC
 -- ===========================
+
 task.spawn(function()
     task.wait(2)
 
@@ -2219,86 +1803,83 @@ task.spawn(function()
     end)
 
     local lobbyReady = false
-    for _ = 1, 60 do
-        if isInLobby() then lobbyReady = true break end
-        task.wait(0.5)
-    end
+    for _ = 1, 60 do if isInLobby() then lobbyReady = true break end task.wait(0.5) end
 
     -- Sync AutoJoin dropdowns
     pcall(function()
         local savedStage   = (Options.StageSelect   and Options.StageSelect.Value)   or "Story"
         local savedWorld   = (Options.WorldSelect   and Options.WorldSelect.Value)   or "Voocha Village"
         local savedChapter = tonumber(Options.ChapterSelect and Options.ChapterSelect.Value) or 1
-
         local data = StageData[savedStage] or StageData["Story"]
+        local worldValid = false
+        for _, w in ipairs(data.worlds) do if w == savedWorld then worldValid = true break end end
+        local useWorld = worldValid and savedWorld or data.worlds[1]
         SelectedStage        = savedStage
-        SelectedWorld        = data.worldMap[savedWorld] or savedWorld
-        SelectedWorldDisplay = savedWorld
-
+        SelectedWorld        = data.worldMap[useWorld] or useWorld
+        SelectedWorldDisplay = useWorld
         local chapters = data.chapterMap[SelectedWorld] or {1}
         local chapterValid = false
-        for _, c in ipairs(chapters) do
-            if tonumber(c) == savedChapter then chapterValid = true break end
-        end
+        for _, c in ipairs(chapters) do if tonumber(c) == savedChapter then chapterValid = true break end end
         local useChapter = chapterValid and savedChapter or chapters[1]
-
         SelectedChapter        = getFullChapterName(SelectedWorld, useChapter, savedStage)
         SelectedChapterDisplay = "Chapter " .. tostring(useChapter)
-
-        updateDropdown(WorldDropdown,   data.worlds, false)
-        task.defer(function()
-            local data3     = StageData[SelectedStage] or StageData["Story"]
-            local chapters3 = data3.chapterMap[SelectedWorld] or {1}
-            updateDropdown(ChapterDropdown, chapters3, false)
-        end)
-
+        WorldDropdown.Values   = data.worlds
+        ChapterDropdown.Values = chapters
+        _saveLoaded = true
+        pcall(function() WorldDropdown:SetValue(useWorld)     end)
+        pcall(function() ChapterDropdown:SetValue(useChapter) end)
         print("[HamYai69Hub] ✅ AutoJoin synced | " .. savedStage .. " → " .. SelectedWorld .. " → " .. SelectedChapter)
     end)
 
+    -- Sync Event dropdowns
     pcall(function()
         local savedStage   = (Options.EventStageSelect   and Options.EventStageSelect.Value)   or "Ghoul Hunt"
         local savedWorld   = (Options.EventWorldSelect   and Options.EventWorldSelect.Value)   or "Ghoul Hunt"
         local savedChapter = (Options.EventChapterSelect and Options.EventChapterSelect.Value) or 1
-
         local stageData = EventStageData[savedStage] or EventStageData["Ghoul Hunt"]
-
         local worldValid = false
-        for _, w in ipairs(stageData.worlds) do
-            if w == savedWorld then worldValid = true break end
-        end
+        for _, w in ipairs(stageData.worlds) do if w == savedWorld then worldValid = true break end end
         local useWorld = worldValid and savedWorld or stageData.worlds[1]
         local wdata = stageData.worldMap[useWorld] or stageData.worldMap[stageData.worlds[1]]
-
         local chapterValid = false
-        for _, c in ipairs(wdata.chapters) do
-            if tonumber(c) == tonumber(savedChapter) then chapterValid = true break end
-        end
+        for _, c in ipairs(wdata.chapters) do if tonumber(c) == tonumber(savedChapter) then chapterValid = true break end end
         local useChapter = chapterValid and tonumber(savedChapter) or wdata.chapters[1]
-
         SelectedEventStage   = savedStage
         SelectedEventWorld   = useWorld
         SelectedEventChapter = useChapter
-
-        EventWorldDropdown.Values   = stageData.worlds
-        _saveLoaded = true
+        EventWorldDropdown.Values = stageData.worlds
         EventWorldDropdown:SetValue(useWorld)
         EventChapterDropdown:SetValue(useChapter)
-        _saveLoaded = false
     end)
 
-    _saveLoaded = true
+    -- ===========================
+    --   Auto Daily Rewards on Load
+    --   รันครั้งเดียว ถ้า toggle เปิดอยู่เท่านั้น
+    -- ===========================
+    task.spawn(function()
+        task.wait(1)
+        if not (Options.AutoDailyRewards and Options.AutoDailyRewards.Value) then return end
+
+        for day = 1, 7 do
+            pcall(function()
+                game:GetService("ReplicatedStorage")
+                    :WaitForChild("Remote"):WaitForChild("Server")
+                    :WaitForChild("Lobby"):WaitForChild("DailyRewards")
+                    :FireServer("Claim", day)
+            end)
+            task.wait(1)
+        end
+        -- จบแล้วไม่วนซ้ำ ต้องรันสคริปใหม่ถึงจะกดอีกครั้ง
+    end)
 
     -- Auto save loop
     task.spawn(function()
-        while true do
-            task.wait(3)
-            autoSave()
-        end
+        while true do task.wait(3) autoSave() end
     end)
 end)
 
 task.delay(2, function()
-    print("[HamYai69Hub] ✅ Ready! v2.18 — Spiral Invasion / Auto End Match / Element Select / Anniversary Coin / Auto Spiral Drill")
+    print("[HamYai69Hub] ✅ Ready! v2.9 — SystemMessage Blocker / Daily Rewards once / Chapter Fix")
 end)
 
 -- ===========================
@@ -2310,12 +1891,8 @@ task.spawn(function()
         local myName = LocalPlayer.Name
         for _, v in pairs(workspace:GetDescendants()) do
             if v:IsA("TextLabel") then
-                if v.Text:find("%[") and v:GetFullName():find(myName) then
-                    v.Text = "[HamYai69Hub]"
-                end
-                if v.Text == myName then
-                    v.Text = "HamYai69Hub"
-                end
+                if v.Text:find("%[") and v:GetFullName():find(myName) then v.Text = "[HamYai69Hub]" end
+                if v.Text == myName then v.Text = "HamYai69Hub" end
             end
         end
     end)
